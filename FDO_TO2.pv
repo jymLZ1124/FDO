@@ -1,0 +1,618 @@
+(* 这个应该是最终版，但是目前运行不出来 *)
+
+(* set verboseRules = false. 
+set maxDepth = 50.  *)
+(************************************************************)
+(*                         channel                      	*)
+(************************************************************)
+free c:channel. 			
+free ch_own:channel[private].	
+free ch_dev:channel[private].
+
+(************************************************************)
+(*                    signature function                   	*)
+(************************************************************)
+type spkey.
+type sskey.
+
+fun spk(sskey):spkey.
+
+fun sign(bitstring, sskey):bitstring.
+reduc forall m:bitstring,ssk:sskey; checksign(sign(m,ssk),spk(ssk))=m.
+
+(************************************************************)
+(*                       Certificates                    	*)
+(************************************************************)
+fun cert(spkey, sskey): bitstring.
+reduc forall pk: spkey, ssk: sskey; checkcert(cert(pk,ssk),spk(ssk)) = true.
+reduc forall pk: spkey, ssk: sskey; getpk(cert(pk,ssk)) = pk.
+
+(************************************************************)
+(*                 Hash and hmac Functions               	*)
+(************************************************************)
+type msg.
+fun hash(bitstring):bitstring.
+fun hash_key(spkey):bitstring.
+fun hmac(bitstring, bitstring):bitstring.
+fun hash_msg(msg):bitstring.
+
+(************************************************************)
+(*                   table for database                 	*)
+(************************************************************)
+table AddressList(bitstring,spkey,bitstring,bitstring,bitstring).
+
+type G.
+type P.
+const g:G.
+const p:P.
+
+(* Diffie-Helmann Exponential function *)
+fun exp(G, bitstring): G.
+equation forall x:bitstring, y:bitstring; exp(exp(g, x), y) = exp(exp(g, y), x).
+(* Key derivation function *)
+fun KDF(G):bitstring.
+free secret_device:bitstring [private].
+free secret_owner:bitstring [private].
+(* Symmetric encryption *)
+fun senc(bitstring, bitstring):bitstring.
+reduc forall m:bitstring, shk:bitstring; sdec(senc(m, shk), shk) = m.
+
+
+(*********************************************************************************************************)
+(*********************************************************************************************************)
+(*                                             query                                                     *)
+(*********************************************************************************************************)
+(*********************************************************************************************************)
+query attacker(secret_owner).
+(* query attacker(secret_device). *)
+
+event Device_verify_TO2(bitstring,bitstring,spkey).
+event Owner_init_TO2(bitstring,bitstring,spkey).
+(* query OVGuid:bitstring,Nonce3:bitstring,pkown:spkey; inj-event (Device_verify_TO2(OVGuid,Nonce3,pkown)) ==> inj-event (Owner_init_TO2(OVGuid,Nonce3,pkown)). *)
+
+event Owner_verify_TO2(spkey,bitstring,spkey).
+event Device_init_TO2(spkey,bitstring,spkey).
+(* query OVGuid:bitstring,Nonce4:bitstring,pkown:spkey,pkdev:spkey; inj-event (Owner_verify_TO2(OVGuid,Nonce4,pkown,pkdev)) ==> inj-event (Device_init_TO2(OVGuid,Nonce4,pkown,pkdev)). *)
+
+event Owner_register_TO0(spkey,spkey,bitstring).
+event Device_onboarding_TO2(spkey,spkey,bitstring).
+(* query pkown:spkey,pkdev:spkey,TargetAddress:bitstring; inj-event(Device_onboarding_TO2(pkown,pkdev,TargetAddress))  ==> event(Owner_register_TO0(pkown,pkdev,TargetAddress)). *)
+
+(*****************************************************************************)
+(*            Device Iniialize protocol (DI) message format                  *)
+(*****************************************************************************)
+fun DI_DeviceMfgInfo(bitstring,bitstring):bitstring[data].
+fun DI_DevCertChain(bitstring):bitstring[data].
+fun DI_OVHeader(bitstring,bitstring,bitstring,spkey,bitstring):bitstring[data].
+fun DI_OV(bitstring,bitstring,bitstring,bitstring):bitstring[data].
+fun DI_EPayload(bitstring,bitstring,spkey):bitstring[data].
+fun DI_Entry(bitstring,bitstring):bitstring[data].
+
+fun DI_AppStart(bitstring):msg[data].
+fun DI_SetCredentials(bitstring):msg[data].
+fun DI_SetHMAC(bitstring):msg[data].
+fun DI_Done():msg[data].
+
+
+(*****************************************************************************)
+(*           Transfer Ownership Protocol 0 (TO0) message format              *)
+(*****************************************************************************)
+fun TO0_Hello():msg[data].
+fun TO0_HelloAck(bitstring,bitstring):msg[data].
+fun TO0_OwnerSign(bitstring,bitstring,bitstring,bitstring,bitstring,bitstring):msg[data].
+fun TO0_AcceptOwner(bitstring):msg[data].
+
+
+(*****************************************************************************)
+(*           Transfer Ownership Protocol 1 (TO1) message format              *)
+(*****************************************************************************)
+fun TO1_HelloRV(bitstring):msg[data].
+fun TO1_HelloRVAck(bitstring):msg[data].
+fun TO1_ProveToRV(bitstring,bitstring):msg[data].
+fun TO1_RVRedirect(bitstring,bitstring,bitstring):msg[data].
+
+(*****************************************************************************)
+(*           Transfer Ownership Protocol 2 (TO2) message format              *)
+(*****************************************************************************)
+fun TO2_HelloDevice(bitstring,bitstring):msg[data].
+fun TO2_ProveOVHdr(bitstring,spkey,bitstring,bitstring,bitstring,G,bitstring,bitstring,bitstring):msg[data].
+fun TO2_ProveDevice(bitstring,G,bitstring):msg[data].
+
+
+(*****************************************************************************)
+(*                   Certificate Authority assign certificate                *)
+(*****************************************************************************)
+let CA_assignCert(skCA:sskey)=
+    in(c,pkx:spkey);
+    let xcert=cert(pkx,skCA) in
+    out(c,xcert).
+
+(*****************************************************************************)
+(*                               Manufacturer                                *)
+(*****************************************************************************)
+let Manufacturer(MD:channel,skmfr:sskey,pkdev:spkey,pkdis:spkey,pkCA:spkey) =
+
+	out(c,pkdev);
+	in(c,devCert:bitstring);
+	if pkdev=getpk(devCert) then
+    if checkcert(devCert,pkCA)=true then
+
+	in (MD,DI_AppStart(devicemfginfo));
+    let DI_DeviceMfgInfo(rendezvousinfo,deviceinfo)=devicemfginfo in
+    let OVRVInfo=rendezvousinfo in
+    let OVDeviceInfo=deviceinfo in
+    let OVPublicKey=spk(skmfr) in
+    new OVGuid:bitstring;
+    let OVDevCertChain=DI_DevCertChain(devCert) in
+    let OVDevCertChainHash=hash(OVDevCertChain) in
+    let OVHeader=DI_OVHeader(OVGuid,OVRVInfo,OVDeviceInfo,OVPublicKey,OVDevCertChainHash) in
+    out(MD,DI_SetCredentials(OVHeader));
+
+    in(MD,DI_SetHMAC(OVHeaderHMac));
+
+    out(MD,DI_Done());
+
+    (************************************************************)
+    (*       OV from manufacturer extends to Distributor        *)
+    (************************************************************)
+	let OVEHashHdrInfo0=hash((OVGuid,OVDeviceInfo)) in
+    let OVEHashPrevEntry0=hash((OVHeader,OVHeaderHMac)) in
+    let OVEPubKey0=pkdis in
+	let OVEPayload0=DI_EPayload(OVEHashHdrInfo0,OVEHashPrevEntry0,OVEPubKey0) in
+    let OVESignature0=sign(OVEPayload0,skmfr) in
+    let OVEntry0=DI_Entry(OVEPayload0,OVESignature0) in
+
+	let OVEntryArray=(OVEntry0) in
+    let OV=DI_OV(OVHeader,OVHeaderHMac,OVDevCertChain,OVEntryArray) in
+    out(c,OV).
+
+    (************************************************************)
+    (*         OV from Distributor extends to Retailer          *)
+    (************************************************************)
+
+let dis_ExtendTo_ret(skdis:sskey,pkret:spkey)=	
+
+	in(c,OV:bitstring);
+    let DI_OV(OVHeader,OVHeaderHMac,OVDevCertChain,OVEntryArray)=OV in 
+    let DI_OVHeader(OVGuid,OVRVInfo,OVDeviceInfo,OVPublicKey,OVDevCertChainHash)=OVHeader in
+    let (OVEntry0:bitstring)=OVEntryArray in
+
+    (* OV internal verification *)
+    let DI_Entry(OVEPayload0,OVESignature0)=OVEntry0 in
+    let DI_EPayload(OVEHashHdrInfo0,OVEHashPrevEntry0,OVEPubKey0)=OVEPayload0 in
+    if OVEHashHdrInfo0=hash((OVGuid,OVDeviceInfo)) then
+    if OVEHashPrevEntry0=hash((OVHeader,OVHeaderHMac)) then
+    if checksign(OVESignature0,OVPublicKey) = OVEPayload0 then
+    
+    if OVEPubKey0=spk(skdis) then
+
+    (* Ownership Voucher Extension *)
+	let OVEHashHdrInfo1=hash((OVGuid,OVDeviceInfo)) in
+    let OVEHashPrevEntry1=hash(OVEntry0) in
+    let OVEPubKey1=pkret in
+	let OVEPayload1=DI_EPayload(OVEHashHdrInfo1,OVEHashPrevEntry1,OVEPubKey1) in
+    let OVESignature1=sign(OVEPayload1,skdis) in
+    let OVEntry1=DI_Entry(OVEPayload1,OVESignature1) in
+
+	let OVEntryArray'=(OVEntry0,OVEntry1) in
+	let OV' = DI_OV(OVHeader,OVHeaderHMac,OVDevCertChain,OVEntryArray') in
+	out(c, OV').
+
+    (************************************************************)
+    (*            OV from Retailer extends to Owner             *)
+    (************************************************************)
+let Ret_ExtendTo_Owner(skret:sskey,pkown:spkey) = 
+
+	in(c, OV:bitstring);
+	let DI_OV(OVHeader,OVHeaderHMac,OVDevCertChain,OVEntryArray)=OV in
+	let DI_OVHeader(OVGuid, OVRVInfo, OVDeviceInfo, OVPublicKey, OVDevCertChainHash) = OVHeader in
+	let (OVEntry0:bitstring, OVEntry1:bitstring)=OVEntryArray in
+
+    (* OV internal verification *)
+    let DI_Entry(OVEPayload0,OVESignature0)=OVEntry0 in
+    let DI_EPayload(OVEHashHdrInfo0,OVEHashPrevEntry0,OVEPubKey0)=OVEPayload0 in
+    if OVEHashHdrInfo0=hash((OVGuid,OVDeviceInfo)) then
+    if OVEHashPrevEntry0=hash((OVHeader,OVHeaderHMac)) then
+    if checksign(OVESignature0,OVPublicKey) = OVEPayload0 then
+
+	let DI_Entry(OVEPayload1,OVESignature1) = OVEntry1 in
+	let DI_EPayload(OVEHashHdrInfo1,OVEHashPrevEntry1,OVEPubKey1)=OVEPayload1 in
+	if OVEHashHdrInfo1=hash((OVGuid,OVDeviceInfo)) then
+	if OVEHashPrevEntry1=hash(OVEntry0) then
+	if checksign(OVESignature1,OVEPubKey0) = OVEPayload1 then
+
+	if OVEPubKey1=spk(skret) then
+
+	(* Ownership Voucher Extension *)
+	let OVEHashHdrInfo2=hash((OVGuid,OVDeviceInfo)) in
+    let OVEHashPrevEntry2=hash(OVEntry1) in
+    let OVEPubKey2=pkown in
+	let OVEPayload2=DI_EPayload(OVEHashHdrInfo2,OVEHashPrevEntry2,OVEPubKey2) in
+    let OVESignature2=sign(OVEPayload2,skret) in
+    let OVEntry2=DI_Entry(OVEPayload2,OVESignature2) in
+
+	let OVEntryArray'=(OVEntry0, OVEntry1, OVEntry2) in
+	let OV' = DI_OV(OVHeader, OVHeaderHMac, OVDevCertChain, OVEntryArray') in
+
+	out(c, OV').
+
+
+(*****************************************************************************)
+(*                                  Device                                   *)
+(*****************************************************************************)
+let Device(DM:channel,skdev:sskey,serverip:bitstring) = 
+
+	let rendezvousinfo=serverip in
+    new deviceinfo:bitstring;
+    let devicemfginfo=DI_DeviceMfgInfo(rendezvousinfo,deviceinfo) in
+    out(DM,DI_AppStart(devicemfginfo));
+
+    in(DM,DI_SetCredentials(OVHeader));
+    let DI_OVHeader(OVGuid,OVRVInfo,OVDeviceInfo,OVPublicKey,OVDevCertChainHash)=OVHeader in
+    (*create device credential*)
+    let OVPubKeyHash=hash_key(OVPublicKey) in
+    (*create OVHeaderHMac*)
+    new HmacSecret:bitstring;
+    let OVHeaderHMac=hmac(OVHeader,HmacSecret) in
+    out(DM,DI_SetHMAC(OVHeaderHMac));
+    
+    in(DM,DI_Done());
+
+	out(ch_dev,OVGuid);
+	out(ch_dev,(OVHeader,HmacSecret,OVPubKeyHash)).
+
+let Device_TO1(DS:channel,skdev:sskey)=
+
+    (***********************************************************)
+	(*                           TO1                           *)
+	(***********************************************************)
+    in(ch_dev,OVGuid:bitstring);
+
+	out(DS, TO1_HelloRV(OVGuid));
+	
+	in(DS, TO1_HelloRVAck(Nonce2));
+
+    let YS = sign(Nonce2,skdev) in
+
+	out(DS, TO1_ProveToRV(Nonce2,YS));
+
+	in(DS, TO1_RVRedirect(TargetAddress,OH,TS));
+
+	out(ch_dev,(TargetAddress,OH,TS)).
+	
+
+	(***********************************************************)
+	(*                           TO2                           *)
+	(***********************************************************)
+
+let Device_TO2(skdev:sskey)=
+
+	in(ch_dev,(OVHeader:bitstring,HmacSecret:bitstring,OVPubKeyHash:bitstring));
+	in(ch_dev,(TargetAddress:bitstring,OH:bitstring,TS:bitstring));
+	let DI_OVHeader(OVGuid,OVRVInfo,OVDeviceInfo,OVPublicKey,OVDevCertChainHash)=OVHeader in
+
+	new Nonce3:bitstring;		
+	out(c, TO2_HelloDevice(OVGuid, Nonce3));
+	
+	in(c, TO2_ProveOVHdr(Nonce4, pkown, =OVHeader, OVHeaderHMac, =Nonce3, xA, h, WS, OVEntryArray));
+	let DI_OVHeader(=OVGuid, =OVRVInfo, =OVDeviceInfo, =OVPublicKey, =OVDevCertChainHash) = OVHeader in
+
+	(* Device verifies hash previous message *)
+	if h=hash_msg(TO2_HelloDevice(OVGuid, Nonce3)) then
+	if hash_key(OVPublicKey) = OVPubKeyHash then
+	if hmac(OVHeader, HmacSecret) = OVHeaderHMac then
+
+	if checksign(WS,pkown) = (OVHeader, OVHeaderHMac, Nonce3, xA, h) then
+	if checksign(TS,pkown) = (TargetAddress,OH) then
+
+	let (OVEntry0:bitstring,OVEntry1:bitstring,OVEntry2:bitstring)=OVEntryArray in
+
+	(* Internal verification of the OV *)
+	let DI_Entry(OVEPayload0,OVESignature0)=OVEntry0 in
+    let DI_EPayload(OVEHashHdrInfo0,OVEHashPrevEntry0,OVEPubKey0)=OVEPayload0 in
+    if OVEHashHdrInfo0=hash((OVGuid,OVDeviceInfo)) then
+    if OVEHashPrevEntry0=hash((OVHeader,OVHeaderHMac)) then
+    if checksign(OVESignature0,OVPublicKey) = OVEPayload0 then
+    
+	let DI_Entry(OVEPayload1,OVESignature1) = OVEntry1 in
+	let DI_EPayload(OVEHashHdrInfo1,OVEHashPrevEntry1,OVEPubKey1)=OVEPayload1 in
+	if OVEHashHdrInfo1=hash((OVGuid,OVDeviceInfo)) then
+	if OVEHashPrevEntry1=hash(OVEntry0) then
+	if checksign(OVESignature1,OVEPubKey0) = OVEPayload1 then
+
+	let DI_Entry(OVEPayload2,OVESignature2) = OVEntry2 in
+	let DI_EPayload(OVEHashHdrInfo2,OVEHashPrevEntry2,OVEPubKey2)=OVEPayload2 in
+	if OVEHashHdrInfo2=hash((OVGuid,OVDeviceInfo)) then
+	if OVEHashPrevEntry2=hash(OVEntry1) then
+	if checksign(OVESignature2,OVEPubKey1) = OVEPayload2 then
+	
+	if OVEPubKey2 = pkown then
+
+	event Device_verify_TO2(OVGuid,Nonce3,OVEPubKey2);
+	(* event Device_onboarding_TO2(CUPHOwnerPubKey,spk(skdev),to1d); *)
+		
+	new b:bitstring;
+	let xB = exp(g, b) in
+	let DS = sign((Nonce4, xB), skdev) in
+	event Device_init_TO2(OVEPubKey2,Nonce4,spk(skdev));
+	out(c, TO2_ProveDevice(Nonce4, xB, DS));
+
+	let sharedKeyExp = exp(xA, b) in
+	let K = KDF(sharedKeyExp) in
+	let testenc = senc(secret_device, K) in
+	out(c,testenc);
+
+	in(c,s:bitstring);
+	if secret_owner=sdec(s,K) then
+	0.
+
+
+(*****************************************************************************)
+(*                                   Owner                                   *)
+(*****************************************************************************)
+
+let Owner(skown:sskey,pkCA:spkey)=
+
+    (*Owner receives Ownership Voucher*)
+	in(c,OV:bitstring);
+	let DI_OV(OVHeader,OVHeaderHMac,OVDevCertChain,OVEntryArray)=OV in
+	let DI_OVHeader(OVGuid, OVRVInfo, OVDeviceInfo, OVPublicKey, OVDevCertChainHash) = OVHeader in
+	let (OVEntry0:bitstring,OVEntry1:bitstring,OVEntry2:bitstring)=OVEntryArray in	
+	
+	(* verify the DevCertChain *)
+	let DI_DevCertChain(dev_Cert)=OVDevCertChain in
+	if checkcert(dev_Cert, pkCA) = true then
+	(* verify the DevCertChainHash *)
+	if hash(OVDevCertChain)=OVDevCertChainHash then 
+	let pkdev = getpk(dev_Cert) in
+
+	(* OV internal verification *)
+    let DI_Entry(OVEPayload0,OVESignature0)=OVEntry0 in
+    let DI_EPayload(OVEHashHdrInfo0,OVEHashPrevEntry0,OVEPubKey0)=OVEPayload0 in
+    if OVEHashHdrInfo0=hash((OVGuid,OVDeviceInfo)) then
+    if OVEHashPrevEntry0=hash((OVHeader,OVHeaderHMac)) then
+    if checksign(OVESignature0,OVPublicKey) = OVEPayload0 then
+    
+	let DI_Entry(OVEPayload1,OVESignature1) = OVEntry1 in
+	let DI_EPayload(OVEHashHdrInfo1,OVEHashPrevEntry1,OVEPubKey1)=OVEPayload1 in
+	if OVEHashHdrInfo1=hash((OVGuid,OVDeviceInfo)) then
+	if OVEHashPrevEntry1=hash(OVEntry0) then
+	if checksign(OVESignature1,OVEPubKey0) = OVEPayload1 then
+
+	let DI_Entry(OVEPayload2,OVESignature2) = OVEntry2 in
+	let DI_EPayload(OVEHashHdrInfo2,OVEHashPrevEntry2,OVEPubKey2)=OVEPayload2 in
+	if OVEHashHdrInfo2=hash((OVGuid,OVDeviceInfo)) then
+	if OVEHashPrevEntry2=hash(OVEntry1) then
+	if checksign(OVESignature2,OVEPubKey1) = OVEPayload2 then
+
+	if OVEPubKey2 = spk(skown) then
+	out(ch_own,(OV)).
+
+    (***********************************************************)
+    (*                           TO0                           *)
+    (***********************************************************)
+let Owner_Onboarding_Service_TO0(OS:channel,skown:sskey,TargetAddress:bitstring,pkCA:spkey) =
+	in(ch_own,(OV:bitstring));
+	let DI_OV(OVHeader,OVHeaderHMac,OVDevCertChain,OVEntryArray)=OV in
+	let DI_OVHeader(OVGuid, OVRVInfo, OVDeviceInfo, OVPublicKey, OVDevCertChainHash) = OVHeader in
+	let DI_DevCertChain(dev_Cert)=OVDevCertChain in
+	let pkdev = getpk(dev_Cert) in
+
+	out(OS,TO0_Hello());
+	in(OS,TO0_HelloAck(Nonce1,ServerCert));
+	if checkcert(ServerCert,pkCA)=true then
+	let pkrv=getpk(ServerCert) in
+
+	new WaitSeconds:bitstring;
+	let OH = hash((OV,WaitSeconds,Nonce1)) in
+	let TS = sign((TargetAddress,OH),skown) in
+	
+	out(OS,TO0_OwnerSign(OV,WaitSeconds,Nonce1,TargetAddress,OH,TS));
+
+	in(OS,TO0_AcceptOwner(=WaitSeconds)).
+
+	(***********************************************************)
+	(*                           TO2                           *)
+	(***********************************************************)
+let Owner_Onboarding_Service_TO2(skown:sskey)=	
+
+	in(ch_own,(OV:bitstring));
+	let DI_OV(OVHeader,OVHeaderHMac,OVDevCertChain,OVEntryArray)=OV in
+	let DI_OVHeader(OVGuid, OVRVInfo, OVDeviceInfo, OVPublicKey, OVDevCertChainHash) = OVHeader in
+
+	let DI_DevCertChain(dev_Cert)=OVDevCertChain in
+	let pkdev = getpk(dev_Cert) in
+
+	in(c, TO2_HelloDevice(=OVGuid, Nonce3));
+
+	new a:bitstring;
+	let xA = exp(g,a) in
+	let h = hash_msg(TO2_HelloDevice(OVGuid, Nonce3)) in
+	let WS = sign((OVHeader, OVHeaderHMac, Nonce3, xA, h), skown) in
+	new Nonce4:bitstring;
+	
+	event Owner_init_TO2(OVGuid,Nonce3,spk(skown));
+
+	out(c, TO2_ProveOVHdr(Nonce4, spk(skown), OVHeader, OVHeaderHMac, Nonce3, xA, h, WS, OVEntryArray));
+	
+	in(c, TO2_ProveDevice(=Nonce4, xB, DS));
+	if checksign(DS,pkdev) = (Nonce4, xB) then
+
+	event Owner_verify_TO2(spk(skown),Nonce4,pkdev);
+
+	let sharedKeyExp = exp(xB, a) in
+	let K = KDF(sharedKeyExp) in
+
+	out(c,senc(secret_owner,K));
+
+	in(c,s:bitstring);
+    if sdec(s, K) = secret_device then
+    0.	
+
+(*****************************************************************************)
+(*                           Rendezvous_Server                               *)
+(*****************************************************************************)
+let Rendezvous_Server_TO0(SO:channel,skrv:sskey,pkrv:spkey,pkmfr:spkey,pkCA:spkey) =
+
+	out(c,pkrv);
+	in(c,ServerCert:bitstring);
+	if pkrv=getpk(ServerCert) then
+    if checkcert(ServerCert,pkCA)=true then
+	       
+    in(SO,TO0_Hello());
+	new Nonce1:bitstring;
+	out(SO,TO0_HelloAck(Nonce1,ServerCert));
+
+	in(SO,TO0_OwnerSign(OV,WaitSeconds,=Nonce1,TargetAddress,OH,TS));	
+
+	let DI_OV(OVHeader,OVHeaderHMac,OVDevCertChain,OVEntryArray)=OV in
+	let DI_OVHeader(OVGuid, OVRVInfo, OVDeviceInfo, OVPublicKey, OVDevCertChainHash) = OVHeader in
+	let (OVEntry0:bitstring,OVEntry1:bitstring,OVEntry2:bitstring)=OVEntryArray in
+
+	(* verify OVPublicKey==pkmfr *)
+	if OVPublicKey = pkmfr then
+
+	(* verify the DevCertChain *)
+	let DI_DevCertChain(dev_Cert)=OVDevCertChain in
+	if checkcert(dev_Cert,pkCA) = true then
+	if OVDevCertChainHash = hash(OVDevCertChain) then
+	let pkdev = getpk(dev_Cert) in
+
+	(* OV internal verification *)
+	let DI_Entry(OVEPayload0,OVESignature0)=OVEntry0 in
+    let DI_EPayload(OVEHashHdrInfo0,OVEHashPrevEntry0,OVEPubKey0)=OVEPayload0 in
+    if OVEHashHdrInfo0=hash((OVGuid,OVDeviceInfo)) then
+    if OVEHashPrevEntry0=hash((OVHeader,OVHeaderHMac)) then
+    if checksign(OVESignature0,OVPublicKey) = OVEPayload0 then
+    
+	let DI_Entry(OVEPayload1,OVESignature1) = OVEntry1 in
+	let DI_EPayload(OVEHashHdrInfo1,OVEHashPrevEntry1,OVEPubKey1)=OVEPayload1 in
+	if OVEHashHdrInfo1=hash((OVGuid,OVDeviceInfo)) then
+	if OVEHashPrevEntry1=hash(OVEntry0) then
+	if checksign(OVESignature1,OVEPubKey0) = OVEPayload1 then
+
+	let DI_Entry(OVEPayload2,OVESignature2) = OVEntry2 in
+	let DI_EPayload(OVEHashHdrInfo2,OVEHashPrevEntry2,OVEPubKey2)=OVEPayload2 in
+	if OVEHashHdrInfo2=hash((OVGuid,OVDeviceInfo)) then
+	if OVEHashPrevEntry2=hash(OVEntry1) then
+	if checksign(OVESignature2,OVEPubKey1) = OVEPayload2 then
+
+	(* verify the OH and TS *)
+	if OH = hash((OV,WaitSeconds,Nonce1)) then
+	if checksign(TS,OVEPubKey2) = (TargetAddress,OH) then
+	
+	(* create mapping *)
+	insert AddressList(OVGuid,pkdev,TargetAddress,OH,TS);
+	out(SO,TO0_AcceptOwner(WaitSeconds)).
+
+let Rendezvous_Server_TO1(SD:channel)=
+
+    (***********************************************************)
+	(*                           TO1                           *)
+	(***********************************************************)
+	in(SD, TO1_HelloRV(OVGuid));	
+
+	new Nonce2:bitstring;
+	out(SD, TO1_HelloRVAck(Nonce2));
+
+	in(SD, TO1_ProveToRV(=Nonce2,YS));
+	get AddressList(=OVGuid, pkdev,TargetAddress,OH,TS) in 
+	if checksign(YS,pkdev) = Nonce2  then
+
+	out(SD, TO1_RVRedirect(TargetAddress,OH,TS)).
+
+
+(*****************************************************************************)
+(*                                  process                                  *)
+(*****************************************************************************)
+process
+	(* create Certificate Authority *)
+	new skCA:sskey; 
+	let pkCA = spk(skCA) in
+
+	(* Create Manufacturer *)
+	new skmfr:sskey; 
+	let pkmfr=spk(skmfr) in
+	
+	(* create  Distributor *)
+    new skdis:sskey; 
+	let pkdis=spk(skdis) in
+
+	(* create  Retailer *)
+    new skret:sskey; 
+	let pkret=spk(skret) in
+	out(c,skret);
+
+	(* create owner *)
+    new skown:sskey; 
+	let pkown=spk(skown) in
+	new ownerip:bitstring;
+
+	(* create Device ROE*)
+    new skdev:sskey; 
+	let pkdev=spk(skdev) in 
+
+	(* Create the Rendevouz Server *)
+	new serverip:bitstring; 
+	new skrv:sskey;
+	let pkrv=spk(skrv) in
+
+    new Dev_Mfr:channel;
+    new tls:channel;
+	new https:channel;
+
+	(
+		Device(Dev_Mfr,skdev,serverip) | 
+
+		!CA_assignCert(skCA) |
+		
+		Manufacturer(Dev_Mfr,skmfr,pkdev,pkdis,pkCA) |
+
+		dis_ExtendTo_ret(skdis,pkret)|
+		
+		Ret_ExtendTo_Owner(skret,pkown) | 
+		
+		Owner(skown,pkCA) |
+
+        (
+			in(c,branch:bool);
+			if branch = true then
+				!Owner_Onboarding_Service_TO0(tls,skown,ownerip,pkCA)
+			else
+				!Owner_Onboarding_Service_TO0(c,skown,ownerip,pkCA)
+		)
+
+        |
+
+		(
+			in(c,branch:bool);
+			if branch = true then
+				!Rendezvous_Server_TO0(tls,skrv,pkrv,pkmfr,pkCA)
+			else
+				!Rendezvous_Server_TO0(c,skrv,pkrv,pkmfr,pkCA)
+		)
+
+		|
+        
+        (
+			in(c,branch:bool);
+			if branch = true then
+				!Rendezvous_Server_TO1(https)
+			else
+				!Rendezvous_Server_TO1(c)
+		)
+
+        |
+
+        (
+			in(c,branch:bool);
+			if branch = true then
+				!Device_TO1(https,skdev)
+			else
+				!Device_TO1(c,skdev)
+		)
+
+		| Device_TO2(skdev)
+
+		| Owner_Onboarding_Service_TO2(skown)
+	)
